@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 
 const API_BASE_URL = "http://localhost:8000";
 
@@ -127,7 +127,105 @@ function App() {
   const [activeFilter, setActiveFilter] = useState("all"); // Track current filter (can be "all" or a roomId)
   const [showRoomView, setShowRoomView] = useState(false);
 
-  const handleFileUpload = async (file) => {
+  // New state for streaming
+  const [streamingImages, setStreamingImages] = useState([]);
+  const [isStreaming, setIsStreaming] = useState(false);
+  const [streamingStatus, setStreamingStatus] = useState("Ready");
+  const [processingCount, setProcessingCount] = useState(0);
+  const [desiredStyle, setDesiredStyle] = useState(""); // New state for style input
+  const [selectedFile, setSelectedFile] = useState(null); // Store selected file before upload
+
+  // Start streaming when room view is shown
+  useEffect(() => {
+    if (showRoomView) {
+      startStreaming();
+      loadExistingImages();
+    }
+
+    return () => {
+      stopStreaming();
+    };
+  }, [showRoomView]);
+
+  const startStreaming = () => {
+    setIsStreaming(true);
+    setStreamingStatus("Connecting...");
+
+    const eventSource = new EventSource(`${API_BASE_URL}/stream`);
+
+    eventSource.onopen = () => {
+      console.log("🔥 Streaming connection opened");
+      setStreamingStatus("Live Stream Active");
+    };
+
+    eventSource.onmessage = (event) => {
+      try {
+        const data = JSON.parse(event.data);
+
+        if (data.type === "connected") {
+          console.log("✅ Stream connected:", data.message);
+          return;
+        }
+
+        if (data.type === "status") {
+          setProcessingCount(data.processing_count);
+          return;
+        }
+
+        if (data.type === "new_image" && data.id && data.roomId) {
+          console.log("📡 New image streamed:", data);
+          setStreamingImages((prev) => {
+            // Avoid duplicates
+            const exists = prev.find((img) => img.id === data.id);
+            if (exists) return prev;
+            return [...prev, data];
+          });
+        }
+      } catch (error) {
+        console.error("❌ Error parsing streamed data:", error);
+      }
+    };
+
+    eventSource.onerror = (error) => {
+      console.error("❌ Streaming error:", error);
+      setStreamingStatus("Connection Error");
+      eventSource.close();
+
+      // Retry connection after 5 seconds
+      setTimeout(() => {
+        if (showRoomView) {
+          startStreaming();
+        }
+      }, 5000);
+    };
+
+    // Store reference for cleanup
+    window.streamingConnection = eventSource;
+  };
+
+  const stopStreaming = () => {
+    if (window.streamingConnection) {
+      window.streamingConnection.close();
+      window.streamingConnection = null;
+    }
+    setIsStreaming(false);
+    setStreamingStatus("Disconnected");
+  };
+
+  const loadExistingImages = async () => {
+    try {
+      const response = await fetch(`${API_BASE_URL}/images`);
+      if (response.ok) {
+        const data = await response.json();
+        setStreamingImages(data.images);
+        console.log("📦 Loaded existing images:", data.images.length);
+      }
+    } catch (error) {
+      console.error("❌ Error loading existing images:", error);
+    }
+  };
+
+    const handleFileUpload = async (file) => {
     if (!file) return;
 
     if (!file.type.startsWith("image/")) {
@@ -135,30 +233,51 @@ function App() {
       return;
     }
 
+    console.log("📁 Starting file upload:", {
+      name: file.name,
+      size: file.size,
+      type: file.type,
+      style: desiredStyle
+    });
+
     setIsUploading(true);
     setError("");
 
     const formData = new FormData();
     formData.append("file", file);
+    formData.append("style", desiredStyle);
 
     try {
+      console.log("🚀 Sending request to:", `${API_BASE_URL}/upload`);
+      
       const response = await fetch(`${API_BASE_URL}/upload`, {
         method: "POST",
         body: formData,
       });
 
+      console.log("📨 Response status:", response.status);
+
       if (!response.ok) {
-        throw new Error("Upload failed");
+        const errorText = await response.text();
+        console.error("❌ Upload failed with error:", errorText);
+        throw new Error(`Upload failed: ${response.status} - ${errorText}`);
       }
 
       const result = await response.json();
+      console.log("✅ Upload successful:", result);
+      
       setUploadedImage(`${API_BASE_URL}${result.file_url}`);
+      
+      // Show processing status
+      setStreamingStatus("Processing uploaded image...");
+      
       // Automatically transition to room view after successful upload
       setTimeout(() => {
         setShowRoomView(true);
       }, 1500);
     } catch (err) {
-      setError("Failed to upload image. Make sure the backend is running.");
+      console.error("❌ Upload error:", err);
+      setError(`Failed to upload image: ${err.message}`);
     } finally {
       setIsUploading(false);
     }
@@ -168,7 +287,7 @@ function App() {
     e.preventDefault();
     setIsDragging(false);
     const file = e.dataTransfer.files[0];
-    handleFileUpload(file);
+    setSelectedFile(file); // Store file instead of uploading immediately
   };
 
   const handleDragOver = (e) => {
@@ -183,7 +302,13 @@ function App() {
 
   const handleFileChange = (e) => {
     const file = e.target.files[0];
-    handleFileUpload(file);
+    setSelectedFile(file); // Store file instead of uploading immediately
+  };
+
+  const handleSubmit = () => {
+    if (selectedFile) {
+      handleFileUpload(selectedFile);
+    }
   };
 
   const resetUpload = () => {
@@ -206,7 +331,7 @@ function App() {
   // Get unique room sections from the gallery data
   const getRoomSections = () => {
     const roomMap = new Map();
-    MOCK_GALLERY.forEach((image) => {
+    streamingImages.forEach((image) => {
       if (!roomMap.has(image.roomId)) {
         roomMap.set(image.roomId, {
           id: image.roomId,
@@ -224,7 +349,7 @@ function App() {
   // Get images grouped by room sections for "All Images" view
   const getImagesBySection = () => {
     const sections = new Map();
-    MOCK_GALLERY.forEach((image) => {
+    streamingImages.forEach((image) => {
       if (!sections.has(image.roomId)) {
         sections.set(image.roomId, {
           id: image.roomId,
@@ -242,14 +367,14 @@ function App() {
   // Get filtered images based on active filter
   const getFilteredImages = () => {
     if (activeFilter === "all") {
-      return MOCK_GALLERY;
+      return streamingImages;
     }
-    return MOCK_GALLERY.filter((image) => image.roomId === activeFilter);
+    return streamingImages.filter((image) => image.roomId === activeFilter);
   };
 
   // Get image count for a specific room ID
   const getRoomImageCount = (roomId) => {
-    return MOCK_GALLERY.filter((image) => image.roomId === roomId).length;
+    return streamingImages.filter((image) => image.roomId === roomId).length;
   };
 
   const getCurrentDisplayImage = () => {
@@ -284,7 +409,7 @@ function App() {
                       : "text-gray-700 hover:bg-gray-100"
                   }`}
                 >
-                  All Images ({MOCK_GALLERY.length})
+                  All Images ({streamingImages.length})
                 </button>
 
                 <div className="pt-4">
@@ -598,6 +723,21 @@ function App() {
                           className="hidden"
                           accept="image/*"
                           onChange={handleFileChange}
+                        />
+                      </div>
+
+                      {/* Style Input Field */}
+                      <div className="mt-6">
+                        <label htmlFor="style-input" className="block text-sm font-medium text-gray-700 mb-2">
+                          Desired Style (Optional)
+                        </label>
+                        <input
+                          id="style-input"
+                          type="text"
+                          value={desiredStyle}
+                          onChange={(e) => setDesiredStyle(e.target.value)}
+                          placeholder="e.g., Modern, Minimalist, Classic, etc."
+                          className="w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-black focus:border-black text-sm"
                         />
                       </div>
 
