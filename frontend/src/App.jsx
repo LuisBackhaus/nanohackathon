@@ -689,17 +689,19 @@ function App() {
 
                       <div>
                         <p className="text-2xl font-semibold text-gray-800 mb-2">
-                          Drop your floorplan here
+                          {selectedFile ? `Selected: ${selectedFile.name}` : 'Drop your floorplan here'}
                         </p>
                         <p className="text-gray-600 mb-6">
-                          or browse to choose a file
+                          {selectedFile ? 'File ready - set style and submit' : 'or browse to choose a file'}
                         </p>
 
                         <label
                           htmlFor="file-upload"
                           className="cursor-pointer group"
                         >
-                          <span className="bg-black hover:bg-gray-800 text-white px-8 py-3 rounded-lg font-semibold transition-all duration-200 inline-flex items-center space-x-2 shadow-lg hover:shadow-xl">
+                          <span className={`hover:bg-gray-800 text-white px-8 py-3 rounded-lg font-semibold transition-all duration-200 inline-flex items-center space-x-2 shadow-lg hover:shadow-xl ${
+                            selectedFile ? 'bg-green-600 hover:bg-green-700' : 'bg-black'
+                          }`}>
                             <svg
                               className="w-5 h-5"
                               fill="none"
@@ -713,7 +715,7 @@ function App() {
                                 d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12"
                               />
                             </svg>
-                            <span>Choose File</span>
+                            <span>{selectedFile ? 'Change File' : 'Choose File'}</span>
                           </span>
                         </label>
 
@@ -740,6 +742,18 @@ function App() {
                           className="w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-black focus:border-black text-sm"
                         />
                       </div>
+
+                      {/* Submit Button */}
+                      {selectedFile && (
+                        <div className="mt-6">
+                          <button
+                            onClick={handleSubmit}
+                            className="w-full bg-black hover:bg-gray-800 text-white px-8 py-4 rounded-lg font-semibold transition-all duration-200 shadow-lg hover:shadow-xl"
+                          >
+                            Submit Floorplan
+                          </button>
+                        </div>
+                      )}
 
                       <div className="flex items-center justify-center space-x-4 text-sm text-gray-500">
                         <span className="flex items-center space-x-1">
