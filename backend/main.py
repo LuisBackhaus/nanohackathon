@@ -1,4 +1,4 @@
-from fastapi import FastAPI, File, UploadFile, Form, HTTPException, Request
+from fastapi import FastAPI, File, UploadFile, Form, HTTPException, Request, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from fastapi.staticfiles import StaticFiles
@@ -9,11 +9,13 @@ import asyncio
 import time
 from typing import List, Dict, Any, Tuple
 from pathlib import Path
+from google.genai.types import GenerateContentConfig
 from PIL import Image, ImageDraw, ImageFont
 import io
 import base64
 import dataclasses
 from dotenv import load_dotenv
+from io import BytesIO
 
 # --- GenAI Imports ---
 from google import genai
@@ -79,6 +81,17 @@ class RoomData:
   x1: int
   label: str
   dimensions: str
+
+def iter_image_parts(resp):
+    """Yield PIL.Image objects from a GenerateContentResponse."""
+    for cand in getattr(resp, "candidates", []) or []:
+        content = getattr(cand, "content", None)
+        if not content or not getattr(content, "parts", None):
+            continue
+        for p in content.parts:
+            # New SDK interleaves text and images:
+            if getattr(p, "inline_data", None):
+                yield Image.open(BytesIO(p.inline_data.data))
 
 def parse_json_output(json_output: str):
     """Parses JSON output from the model, removing markdown fencing."""
@@ -148,11 +161,11 @@ Include walls, doors and windows in the bounding box.
         response = await client.aio.models.generate_content(
             model="gemini-2.5-flash",
             contents=[segmentation_prompt, original_plan_image],
-            generation_config={
-                "response_mime_type": "application/json",
-                "response_schema": List[RoomSegment],
-                "temperature": 0.4,
-            },
+            config=GenerateContentConfig(
+            response_mime_type="application/json",
+            response_schema=list[RoomSegment],
+            temperature=0.4,
+            ),
         )
         room_detections = parse_room_data(response.text, img_height=h, img_width=w)
         
@@ -185,24 +198,22 @@ Include walls, doors and windows in the bounding box.
             # 4a. Unfurnished isometric view
             unfurnished_iso_prompt = f"Generate a clean, unfurnished 3D isometric view of the room shown in this cropped floor plan. The room is the '{room['name']}' and its dimensions are approximately {room['dimensions']}. Only model the room itself. Walls are the boundaries. Show only the walls and floor. Do not include any furniture, decorations, or ceiling. The background must be plain white. Do not add any text or labels. Pay close attention to the placement of doors and windows from the plan."
             response = await client.aio.models.generate_content(model=NANO_BANANA, contents=[unfurnished_iso_prompt, room["isolated_plan"]])
-            unfurnished_iso_img = response.parts[0].as_image()
+            unfurnished_iso_img = next(iter_image_parts(response), None)
             room["unfurnished_iso_img"] = unfurnished_iso_img
             await stream_event("unfurnished_view", {"roomId": room["id"], "image": image_to_base64(unfurnished_iso_img)})
 
             # 4b. Furnished isometric view
             furnish_prompt = f"Take this unfurnished 3D isometric view of the '{room['name']}' and furnish it completely according to the style description below. The final image must be a photorealistic, beautifully decorated room. Maintain perfect consistency with the room's structure (walls, windows).\n\nStyle Description:\n{style_description}"
             response = await client.aio.models.generate_content(model=NANO_BANANA, contents=[furnish_prompt, unfurnished_iso_img])
-            furnished_iso_img = response.parts[0].as_image()
+            furnished_iso_img = next(iter_image_parts(response), None)
             room["furnished_iso_img"] = furnished_iso_img
             await stream_event("furnished_view", {"roomId": room["id"], "image": image_to_base64(furnished_iso_img), "title": f"{room['name']} - Furnished View"})
 
             # 4c. Interior eye-level views
-            interior_shot_prompt = f"Based on this furnished isometric view of the '{room['name']}', generate 2 photorealistic, human-eye-level images from inside the room, each from a different angle. These should look like professional real estate photos. Maintain extreme consistency in style, furniture, and colors with the provided isometric view. Place yourself as a human in the room, looking around. RESPECTING THIS VIEW ANGLE AND LAYOUT IS CRUCIAL."
+            interior_shot_prompt = f"Based on this furnished isometric view of the '{room['name']}', generate 2 other images. The first image should be a top down view from above, looking straight down into the room. The second image should be taken from within the room, looking out towards any windows or doors."
             response = await client.aio.models.generate_content(model=NANO_BANANA, contents=[interior_shot_prompt, furnished_iso_img])
-            for i, part in enumerate(response.parts):
-                if image := part.as_image():
-                    await stream_event("interior_shot", {"roomId": room["id"], "image": image_to_base64(image), "title": f"{room['name']} - Interior Shot {i+1}"})
-
+            for i, image in enumerate(iter_image_parts(response)):
+                await stream_event("interior_shot", {"roomId": room["id"], "image": image_to_base64(image), "title": f"{room['name']} - Interior Shot {i+1}"})
         # 5. Final assembled view
         await stream_event("status", {"message": "Step 5: Assembling final property view..."})
         assembly_prompt_parts = [
@@ -214,7 +225,7 @@ Include walls, doors and windows in the bounding box.
                 assembly_prompt_parts.append(room["furnished_iso_img"])
         
         response = await client.aio.models.generate_content(model=NANO_BANANA, contents=assembly_prompt_parts)
-        final_image = response.parts[0].as_image()
+        final_image = next(iter_image_parts(response), None)
         await stream_event("final_assembly", {"image": image_to_base64(final_image), "title": "Full Property - Assembled View"})
 
         await stream_event("status", {"message": "Pipeline complete!"})
@@ -226,7 +237,7 @@ Include walls, doors and windows in the bounding box.
 
 # --- API Endpoints ---
 @app.post("/upload")
-async def upload_floorplan(background_tasks: asyncio.Task, file: UploadFile = File(...), style: str = Form(...)):
+async def upload_floorplan(background_tasks: BackgroundTasks, file: UploadFile = File(...), style: str = Form(...)):
     if not file.content_type.startswith("image/"):
         raise HTTPException(status_code=400, detail="File must be an image")
     
