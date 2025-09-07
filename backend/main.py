@@ -210,7 +210,7 @@ Include walls, doors and windows in the bounding box.
             await stream_event("furnished_view", {"roomId": room["id"], "image": image_to_base64(furnished_iso_img), "title": f"{room['name']} - Furnished View"})
 
             # 4c. Interior eye-level views
-            interior_shot_prompt = f"Based on this furnished isometric view of the '{room['name']}', generate 2 other images. The first image should be a top down view from above, looking straight down into the room. The second image should be taken from within the room, looking out towards any windows or doors."
+            interior_shot_prompt = f"Based on this furnished isometric view of the '{room['name']}', generate 2 other images. The first image should be a top down view from above, looking straight down into the room. The second image should be taken from within the room. Place yourself as a human at the door of the room. It is fine if you cannot see the entire room, just generate what a human would see from the angle you stand at."
             response = await client.aio.models.generate_content(model=NANO_BANANA, contents=[interior_shot_prompt, furnished_iso_img])
             for i, image in enumerate(iter_image_parts(response)):
                 await stream_event("interior_shot", {"roomId": room["id"], "image": image_to_base64(image), "title": f"{room['name']} - Interior Shot {i+1}"})
